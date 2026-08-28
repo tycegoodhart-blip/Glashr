@@ -1,0 +1,336 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Glashr - Real-time Messaging</title>
+    
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/9.23.0/firebase-app.js";
+        import { getFirestore, collection, addDoc, onSnapshot, query, orderBy, getDocs, updateDoc, doc, where, setDoc, deleteDoc } from "https://www.gstatic.com/firebasejs/9.23.0/firebase-firestore.js";
+
+        const firebaseConfig = {
+            apiKey: "AIzaSyABMP0-wOJomEF8TcDo_3n0Clo3ibYAWjY",
+            authDomain: "messaging-app-1fbf2.firebaseapp.com",
+            projectId: "messaging-app-1fbf2",
+            storageBucket: "messaging-app-1fbf2.firebasestorage.app",
+            messagingSenderId: "476912112074",
+            appId: "1:476912112074:web:f9c90361235636ed5dbf33",
+            measurementId: "G-9ZE2GET8XR"
+        };
+
+        const app = initializeApp(firebaseConfig);
+        const db = getFirestore(app);
+        
+        window.db = db;
+        window.collection = collection;
+        window.addDoc = addDoc;
+        window.onSnapshot = onSnapshot;
+        window.query = query;
+        window.orderBy = orderBy;
+        window.getDocs = getDocs;
+        window.updateDoc = updateDoc;
+        window.setDoc = setDoc;
+        window.deleteDoc = deleteDoc;
+        window.doc = doc;
+        window.where = where;
+
+        window.dispatchEvent(new Event('firebase-ready'));
+    </script>
+
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        .bg-dark { background-color: #288a88; }
+        .bg-med { background-color: #4fc2c0; }
+        .bg-light { background-color: #b7e8e7; }
+        .text-dark { color: #288a88; }
+        .text-med { color: #4fc2c0; }
+        .text-light { color: #b7e8e7; }
+        .border-dark { border-color: #288a88; }
+    </style>
+</head>
+<body class="bg-gray-100 h-screen font-sans text-dark">
+
+    <div id="confirm-modal" class="hidden fixed inset-0 bg-black/50 z-[100] flex items-center justify-center p-4">
+        <div class="bg-white p-6 rounded-lg max-w-sm w-full shadow-xl">
+            <h3 id="confirm-msg" class="text-lg font-bold mb-4 text-dark">Are you sure?</h3>
+            <div class="flex gap-2">
+                <button onclick="hideConfirm()" class="flex-1 bg-med text-white py-2 rounded font-bold">Cancel</button>
+                <button id="confirm-btn" class="flex-1 bg-dark text-white py-2 rounded font-bold">Delete</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Error Toast Notification -->
+    <div id="error-toast" class="hidden fixed bottom-5 right-5 bg-red-600 text-white px-4 py-3 rounded-lg shadow-lg z-[110] flex items-center gap-3">
+        <span id="error-text">Permission denied or connection issue.</span>
+        <button onclick="document.getElementById('error-toast').classList.add('hidden')" class="font-bold text-lg">&times;</button>
+    </div>
+
+    <div id="app" class="flex h-screen max-w-6xl mx-auto bg-white shadow-lg overflow-hidden">
+        <aside class="w-1/4 bg-dark text-white p-4 flex flex-col relative">
+            <h2 class="text-5xl font-bold mb-10 mt-4 flex items-center gap-3 text-white">
+                <svg viewBox="0 0 24 24" width="64" height="64" fill="white" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M2 22L8 12L12 18L17 5L22 22H2Z"/>
+                </svg>
+                Glashr
+            </h2>
+            
+            <div id="user-display-area" class="mb-6"></div>
+            
+            <h3 id="contacts-header" class="text-light text-xl font-bold uppercase mb-3">Contacts</h3>
+            <div id="contact-list" class="space-y-2 mb-4"></div>
+            
+            <div class="mt-auto">
+                <button id="toggle-add-btn" onclick="toggleAddContact()" class="w-full bg-white text-dark font-bold py-2 rounded hover:bg-gray-100 transition">Add Contact</button>
+                <div id="add-contact-fields" class="hidden mt-2 space-y-2">
+                    <input type="text" id="new-contact-input" placeholder="Contact Name" class="w-full p-2 text-black rounded text-sm">
+                    <div class="flex gap-2">
+                        <button onclick="toggleAddContact()" class="flex-1 bg-light text-dark text-xs py-2 rounded font-bold">Cancel</button>
+                        <button onclick="addContact()" class="flex-1 bg-med text-white text-xs py-2 rounded font-bold">Confirm</button>
+                    </div>
+                </div>
+            </div>
+        </aside>
+
+        <main class="flex-1 flex flex-col">
+            <header class="p-4 border-b flex items-center justify-center">
+                <h2 id="chat-header" class="text-2xl font-bold text-dark">Select a contact</h2>
+            </header>
+            <div id="chat-messages" class="flex-1 p-6 overflow-y-auto bg-light flex flex-col space-y-4"></div>
+            <footer class="p-4 border-t bg-white">
+                <form id="message-form" class="flex space-x-2">
+                    <input type="text" id="message-input" placeholder="Shoot the breeze..." class="flex-1 border border-dark rounded-full px-4 py-2 focus:outline-none text-dark">
+                    <button type="submit" class="bg-dark text-white px-6 py-2 rounded-full hover:bg-med">Send</button>
+                </form>
+            </footer>
+        </main>
+    </div>
+
+    <script>
+        let currentUser = localStorage.getItem('chat-user') || null; 
+        let activeChat = '';
+        let contacts = [];
+        let allMessages = [];
+        let expandedContact = null;
+        let isUserMenuExpanded = false;
+        let contactToRename = null;
+
+        function showError(msg) {
+            const toast = document.getElementById('error-toast');
+            document.getElementById('error-text').innerText = msg;
+            toast.classList.remove('hidden');
+            setTimeout(() => { toast.classList.add('hidden'); }, 6000);
+        }
+
+        function renderUserArea() {
+            const container = document.getElementById('user-display-area');
+            if (currentUser) {
+                container.innerHTML = `
+    <div class="bg-med rounded-lg text-white shadow-lg overflow-hidden">
+        <div class="p-4 flex justify-between items-center">
+            <div>
+                <p class="text-xs font-bold uppercase opacity-80 mb-1">Logged in as:</p>
+                <p class="font-bold truncate">${currentUser}</p>
+            </div>
+            <button onclick="isUserMenuExpanded = !isUserMenuExpanded; renderUserArea()" class="p-1 rounded-full hover:bg-black/20 transition-colors">
+                <svg viewBox="0 0 24 24" fill="currentColor" width="24" height="24">
+                    <circle cx="4" cy="12" r="2" /><circle cx="12" cy="12" r="2" /><circle cx="20" cy="12" r="2" />
+                </svg>
+            </button>
+        </div>
+        ${isUserMenuExpanded ? `
+            <div class="bg-med text-white p-2 space-y-1">
+                <button onclick="isUserMenuExpanded = false; showRenameInput(currentUser, true)" class="block w-full text-left px-4 py-2 hover:bg-black/10 font-bold rounded-lg">Rename User</button>
+                <button onclick="isUserMenuExpanded = false; renderSwitchList()" class="block w-full text-left px-4 py-2 hover:bg-black/10 font-bold rounded-lg">Switch User</button>
+            </div>
+        ` : ''}
+    </div>`;
+            } else {
+                container.innerHTML = '';
+            }
+            renderUI();
+        }
+
+        function toggleContactMenu(name) { expandedContact = expandedContact === name ? null : name; renderUI(); }
+        function hideConfirm() { document.getElementById('confirm-modal').classList.add('hidden'); }
+        function confirmDelete(name) {
+            document.getElementById('confirm-msg').innerText = `Are you sure you want to delete "${name}"?`;
+            document.getElementById('confirm-modal').classList.remove('hidden');
+            document.getElementById('confirm-btn').onclick = async () => { 
+                try {
+                    const q = window.query(window.collection(window.db, "users"), window.where("name", "==", name));
+                    const snapshot = await window.getDocs(q);
+                    for (const d of snapshot.docs) { await window.deleteDoc(d.ref); }
+                    await loadContacts(); activeChat = ''; expandedContact = null; renderUI(); hideConfirm(); 
+                } catch (err) {
+                    showError("Permission denied: Cannot delete user.");
+                    hideConfirm();
+                }
+            };
+        }
+
+        function showRenameInput(name, isMe = false) {
+            isUserMenuExpanded = false;
+            contactToRename = name;
+            renderUserArea();
+            const contactList = document.getElementById('contact-list');
+            document.getElementById('contacts-header').innerText = `RENAME "${name}"`;
+            contactList.innerHTML = `
+                <div class="bg-white p-4 rounded-lg space-y-2">
+                    <input type="text" id="rename-input" placeholder="New Name" class="w-full p-2 border rounded text-black text-sm">
+                    <div class="flex gap-2">
+                        <button onclick="document.getElementById('contacts-header').innerText = 'Contacts'; renderUI()" class="flex-1 bg-light text-dark text-xs py-2 rounded font-bold">Cancel</button>
+                        <button onclick="performRename('${isMe}')" class="flex-1 bg-med text-white text-xs py-2 rounded font-bold">Confirm</button>
+                    </div>
+                </div>
+            `;
+        }
+
+        async function performRename(isMe) {
+            const newName = document.getElementById('rename-input').value.trim();
+            if(!newName) return;
+            try {
+                const q = window.query(window.collection(window.db, "users"), window.where("name", "==", contactToRename));
+                const snapshot = await window.getDocs(q);
+                for (const d of snapshot.docs) { await window.updateDoc(d.ref, { name: newName }); }
+                if (isMe === 'true') { currentUser = newName; localStorage.setItem('chat-user', currentUser); }
+                document.getElementById('contacts-header').innerText = "Contacts";
+                await loadContacts(); renderUserArea();
+            } catch (err) {
+                showError("Permission denied: Cannot rename user.");
+            }
+        }
+
+        function renderSwitchList() {
+            isUserMenuExpanded = false;
+            renderUserArea();
+            const contactList = document.getElementById('contact-list');
+            const contactsHeader = document.getElementById('contacts-header');
+            contactsHeader.style.display = 'block';
+            contactsHeader.innerText = "SELECT A USER";
+            contactList.innerHTML = '';
+            contacts.forEach(u => {
+                const btn = document.createElement('button');
+                btn.className = 'block w-full text-left p-2 bg-dark text-white font-bold rounded hover:bg-emerald-900 transition';
+                btn.innerText = u;
+                btn.onclick = () => { currentUser = u; localStorage.setItem('chat-user', u); contactsHeader.innerText = "Contacts"; renderUserArea(); };
+                contactList.appendChild(btn);
+            });
+        }
+
+        function toggleAddContact() { document.getElementById('toggle-add-btn').classList.toggle('hidden'); document.getElementById('add-contact-fields').classList.toggle('hidden'); }
+        async function addContact() { 
+            const name = document.getElementById('new-contact-input').value.trim(); 
+            if(name) { 
+                try {
+                    await window.addDoc(window.collection(window.db, "users"), { name: name }); 
+                    document.getElementById('new-contact-input').value = ''; 
+                    toggleAddContact(); 
+                    loadContacts(); 
+                } catch (err) {
+                    showError("Permission denied: Cannot add contact.");
+                }
+            } 
+        }
+
+        async function loadContacts() {
+            try {
+                contacts = [];
+                const snapshot = await window.getDocs(window.collection(window.db, "users"));
+                snapshot.forEach(doc => { contacts.push(doc.data().name); });
+                renderUI();
+            } catch (err) {
+                showError("Firestore permission error loading contacts.");
+            }
+        }
+
+        window.addEventListener('firebase-ready', async () => {
+            try {
+                window.onSnapshot(window.query(window.collection(window.db, "messages"), window.orderBy("timestamp")), (snapshot) => {
+                    allMessages = []; 
+                    snapshot.forEach(doc => allMessages.push(doc.data())); 
+                    renderUI();
+                }, (error) => {
+                    showError("Firestore permission error on messages stream.");
+                });
+                await loadContacts();
+            } catch (err) {
+                showError("Failed to initialize database listeners.");
+            }
+        });
+
+        function renderUI() {
+            document.getElementById('chat-header').innerText = activeChat || "Select a contact";
+            const contactList = document.getElementById('contact-list');
+            const contactsHeader = document.getElementById('contacts-header');
+            
+            if (!currentUser) {
+                contactList.innerHTML = `<button onclick="renderSwitchList()" class="w-full bg-med text-white font-bold py-4 rounded-lg hover:bg-emerald-600 transition text-lg uppercase shadow-md">SELECT A USER</button>`;
+                contactsHeader.style.display = 'none';
+            } else {
+                contactsHeader.style.display = 'block';
+                contactsHeader.innerText = "Contacts";
+                contactList.innerHTML = '';
+                contacts.forEach(contact => {
+                    if (contact !== currentUser) {
+                        const isSelected = activeChat === contact;
+                        const isExpanded = expandedContact === contact;
+                        const div = document.createElement('div');
+                        div.className = `rounded ${isExpanded ? 'bg-white' : (isSelected ? 'bg-med' : 'bg-white')}`;
+                        div.innerHTML = `
+                            <div class="flex items-center justify-between p-2 font-bold ${!isExpanded && isSelected ? 'text-white' : 'text-dark'}">
+                                <span onclick="activeChat = '${contact}'; renderUI();" class="flex-1 cursor-pointer">${contact}</span>
+                                <button onclick="toggleContactMenu('${contact}')" class="p-1 rounded-full ${isSelected ? 'text-white' : 'text-dark'}">
+                                    <svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20">
+                                        <circle cx="4" cy="12" r="2" /><circle cx="12" cy="12" r="2" /><circle cx="20" cy="12" r="2" />
+                                    </svg>
+                                </button>
+                            </div>
+                            ${isExpanded ? `
+                                <div class="bg-white text-dark border-t border-gray-200 p-2 space-y-1 rounded-b">
+                                    <button onclick="expandedContact = null; showRenameInput('${contact}')" class="block w-full text-left px-4 py-2 hover:bg-gray-100 font-bold rounded">Rename User</button>
+                                    <button onclick="expandedContact = null; confirmDelete('${contact}')" class="block w-full text-left px-4 py-2 hover:bg-gray-100 font-bold text-dark rounded">Delete User</button>
+                                </div>
+                            ` : ''}
+                        `;
+                        contactList.appendChild(div);
+                    }
+                });
+            }
+
+            const chatBox = document.getElementById('chat-messages');
+            chatBox.innerHTML = '';
+            allMessages.forEach(msg => {
+                if ((msg.sender === currentUser && msg.receiver === activeChat) || (msg.sender === activeChat && msg.receiver === currentUser)) {
+                    const div = document.createElement('div');
+                    const time = msg.timestamp ? new Date(msg.timestamp.seconds * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
+                    div.className = `flex flex-col ${msg.sender === currentUser ? 'items-end' : 'items-start'}`;
+                    div.innerHTML = `
+                        <div class="p-3 rounded-lg max-w-xs ${msg.sender === currentUser ? 'bg-dark text-white' : 'bg-white border text-dark'}">
+                            ${msg.text}
+                        </div>
+                        <p class="text-[10px] opacity-70 mt-1 px-1">${time}</p>
+                    `;
+                    chatBox.appendChild(div);
+                }
+            });
+        }
+
+        document.getElementById('message-form').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const input = document.getElementById('message-input');
+            if (input.value.trim() && activeChat && currentUser) {
+                try {
+                    await window.addDoc(window.collection(window.db, "messages"), { text: input.value, sender: currentUser, receiver: activeChat, timestamp: new Date() });
+                    input.value = '';
+                } catch (err) {
+                    showError("Permission denied: Cannot send message.");
+                }
+            }
+        });
+        
+        renderUserArea();
+    </script>
+</body>
+</html>
