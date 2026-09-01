@@ -7,35 +7,58 @@
     
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/9.23.0/firebase-app.js";
-        import { getFirestore, collection, addDoc, onSnapshot, query, orderBy, getDocs, updateDoc, doc, where, setDoc, deleteDoc } from "https://www.gstatic.com/firebasejs/9.23.0/firebase-firestore.js";
+        import { getAuth, signInWithCustomToken, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/9.23.0/firebase-auth.js";
+        import { getFirestore, collection, addDoc, onSnapshot, getDocs, updateDoc, doc, setDoc, deleteDoc } from "https://www.gstatic.com/firebasejs/9.23.0/firebase-firestore.js";
 
-        const firebaseConfig = {
+        const fallbackConfig = {
             apiKey: "AIzaSyABMP0-wOJomEF8TcDo_3n0Clo3ibYAWjY",
             authDomain: "messaging-app-1fbf2.firebaseapp.com",
             projectId: "messaging-app-1fbf2",
             storageBucket: "messaging-app-1fbf2.firebasestorage.app",
             messagingSenderId: "476912112074",
-            appId: "1:476912112074:web:f9c90361235636ed5dbf33",
-            measurementId: "G-9ZE2GET8XR"
+            appId: "1:476912112074:web:f9c90361235636ed5dbf33"
         };
 
+        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : fallbackConfig;
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'messaging-app-1fbf2';
+
         const app = initializeApp(firebaseConfig);
+        const auth = getAuth(app);
         const db = getFirestore(app);
-        
+
         window.db = db;
+        window.auth = auth;
         window.collection = collection;
         window.addDoc = addDoc;
         window.onSnapshot = onSnapshot;
-        window.query = query;
-        window.orderBy = orderBy;
         window.getDocs = getDocs;
         window.updateDoc = updateDoc;
         window.setDoc = setDoc;
         window.deleteDoc = deleteDoc;
         window.doc = doc;
-        window.where = where;
 
-        window.dispatchEvent(new Event('firebase-ready'));
+        window.getUsersCol = () => collection(db, 'artifacts', appId, 'public', 'data', 'users');
+        window.getMessagesCol = () => collection(db, 'artifacts', appId, 'public', 'data', 'messages');
+
+        const initAuth = async () => {
+            try {
+                if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                    await signInWithCustomToken(auth, __initial_auth_token);
+                } else {
+                    await signInAnonymously(auth);
+                }
+            } catch (err) {
+                console.error("Auth init error:", err);
+            }
+        };
+
+        onAuthStateChanged(auth, (user) => {
+            if (user) {
+                window.dispatchEvent(new Event('firebase-ready'));
+            }
+        });
+
+        initAuth();
     </script>
 
     <script src="https://cdn.tailwindcss.com"></script>
@@ -52,7 +75,7 @@
 <body class="bg-gray-100 h-screen font-sans text-dark">
 
     <div id="confirm-modal" class="hidden fixed inset-0 bg-black/50 z-[100] flex items-center justify-center p-4">
-        <div class="bg-white p-6 rounded-lg max-w-sm w-full shadow-xl">
+        <div class="bg-white p-6 rounded-lg max-w-sm w-full">
             <h3 id="confirm-msg" class="text-lg font-bold mb-4 text-dark">Are you sure?</h3>
             <div class="flex gap-2">
                 <button onclick="hideConfirm()" class="flex-1 bg-med text-white py-2 rounded font-bold">Cancel</button>
@@ -154,17 +177,25 @@
 
         function toggleContactMenu(name) { expandedContact = expandedContact === name ? null : name; renderUI(); }
         function hideConfirm() { document.getElementById('confirm-modal').classList.add('hidden'); }
+        
         function confirmDelete(name) {
             document.getElementById('confirm-msg').innerText = `Are you sure you want to delete "${name}"?`;
             document.getElementById('confirm-modal').classList.remove('hidden');
             document.getElementById('confirm-btn').onclick = async () => { 
                 try {
-                    const q = window.query(window.collection(window.db, "users"), window.where("name", "==", name));
-                    const snapshot = await window.getDocs(q);
-                    for (const d of snapshot.docs) { await window.deleteDoc(d.ref); }
-                    await loadContacts(); activeChat = ''; expandedContact = null; renderUI(); hideConfirm(); 
+                    const snapshot = await window.getDocs(window.getUsersCol());
+                    for (const d of snapshot.docs) { 
+                        if (d.data().name === name) {
+                            await window.deleteDoc(d.ref); 
+                        }
+                    }
+                    await loadContacts(); 
+                    if (activeChat === name) activeChat = ''; 
+                    expandedContact = null; 
+                    renderUI(); 
+                    hideConfirm(); 
                 } catch (err) {
-                    showError("Permission denied: Cannot delete user.");
+                    showError("Error deleting contact: " + err.message);
                     hideConfirm();
                 }
             };
@@ -191,14 +222,21 @@
             const newName = document.getElementById('rename-input').value.trim();
             if(!newName) return;
             try {
-                const q = window.query(window.collection(window.db, "users"), window.where("name", "==", contactToRename));
-                const snapshot = await window.getDocs(q);
-                for (const d of snapshot.docs) { await window.updateDoc(d.ref, { name: newName }); }
-                if (isMe === 'true') { currentUser = newName; localStorage.setItem('chat-user', currentUser); }
+                const snapshot = await window.getDocs(window.getUsersCol());
+                for (const d of snapshot.docs) { 
+                    if (d.data().name === contactToRename) {
+                        await window.updateDoc(d.ref, { name: newName }); 
+                    }
+                }
+                if (isMe === 'true') { 
+                    currentUser = newName; 
+                    localStorage.setItem('chat-user', currentUser); 
+                }
                 document.getElementById('contacts-header').innerText = "Contacts";
-                await loadContacts(); renderUserArea();
+                await loadContacts(); 
+                renderUserArea();
             } catch (err) {
-                showError("Permission denied: Cannot rename user.");
+                showError("Error renaming contact: " + err.message);
             }
         }
 
@@ -219,17 +257,21 @@
             });
         }
 
-        function toggleAddContact() { document.getElementById('toggle-add-btn').classList.toggle('hidden'); document.getElementById('add-contact-fields').classList.toggle('hidden'); }
+        function toggleAddContact() { 
+            document.getElementById('toggle-add-btn').classList.toggle('hidden'); 
+            document.getElementById('add-contact-fields').classList.toggle('hidden'); 
+        }
+
         async function addContact() { 
             const name = document.getElementById('new-contact-input').value.trim(); 
             if(name) { 
                 try {
-                    await window.addDoc(window.collection(window.db, "users"), { name: name }); 
+                    await window.addDoc(window.getUsersCol(), { name: name, createdAt: new Date() }); 
                     document.getElementById('new-contact-input').value = ''; 
                     toggleAddContact(); 
-                    loadContacts(); 
+                    await loadContacts(); 
                 } catch (err) {
-                    showError("Permission denied: Cannot add contact.");
+                    showError("Error adding contact: " + err.message);
                 }
             } 
         }
@@ -237,26 +279,36 @@
         async function loadContacts() {
             try {
                 contacts = [];
-                const snapshot = await window.getDocs(window.collection(window.db, "users"));
-                snapshot.forEach(doc => { contacts.push(doc.data().name); });
+                const snapshot = await window.getDocs(window.getUsersCol());
+                snapshot.forEach(doc => { 
+                    const data = doc.data();
+                    if (data && data.name && !contacts.includes(data.name)) {
+                        contacts.push(data.name); 
+                    }
+                });
                 renderUI();
             } catch (err) {
-                showError("Firestore permission error loading contacts.");
+                showError("Error loading contacts: " + err.message);
             }
         }
 
         window.addEventListener('firebase-ready', async () => {
             try {
-                window.onSnapshot(window.query(window.collection(window.db, "messages"), window.orderBy("timestamp")), (snapshot) => {
+                window.onSnapshot(window.getMessagesCol(), (snapshot) => {
                     allMessages = []; 
                     snapshot.forEach(doc => allMessages.push(doc.data())); 
+                    allMessages.sort((a, b) => {
+                        const timeA = a.timestamp?.seconds || (a.timestamp ? new Date(a.timestamp).getTime() / 1000 : 0);
+                        const timeB = b.timestamp?.seconds || (b.timestamp ? new Date(b.timestamp).getTime() / 1000 : 0);
+                        return timeA - timeB;
+                    });
                     renderUI();
                 }, (error) => {
-                    showError("Firestore permission error on messages stream.");
+                    showError("Error on messages listener: " + error.message);
                 });
                 await loadContacts();
             } catch (err) {
-                showError("Failed to initialize database listeners.");
+                showError("Error initializing messaging: " + err.message);
             }
         });
 
@@ -304,7 +356,11 @@
             allMessages.forEach(msg => {
                 if ((msg.sender === currentUser && msg.receiver === activeChat) || (msg.sender === activeChat && msg.receiver === currentUser)) {
                     const div = document.createElement('div');
-                    const time = msg.timestamp ? new Date(msg.timestamp.seconds * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
+                    let time = '';
+                    if (msg.timestamp) {
+                        const secs = msg.timestamp.seconds || new Date(msg.timestamp).getTime() / 1000;
+                        time = new Date(secs * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+                    }
                     div.className = `flex flex-col ${msg.sender === currentUser ? 'items-end' : 'items-start'}`;
                     div.innerHTML = `
                         <div class="p-3 rounded-lg max-w-xs ${msg.sender === currentUser ? 'bg-dark text-white' : 'bg-white border text-dark'}">
@@ -322,10 +378,15 @@
             const input = document.getElementById('message-input');
             if (input.value.trim() && activeChat && currentUser) {
                 try {
-                    await window.addDoc(window.collection(window.db, "messages"), { text: input.value, sender: currentUser, receiver: activeChat, timestamp: new Date() });
+                    await window.addDoc(window.getMessagesCol(), { 
+                        text: input.value, 
+                        sender: currentUser, 
+                        receiver: activeChat, 
+                        timestamp: new Date() 
+                    });
                     input.value = '';
                 } catch (err) {
-                    showError("Permission denied: Cannot send message.");
+                    showError("Error sending message: " + err.message);
                 }
             }
         });
