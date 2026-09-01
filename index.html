@@ -189,15 +189,16 @@
                             await window.deleteDoc(d.ref); 
                         }
                     }
-                    await loadContacts(); 
-                    if (activeChat === name) activeChat = ''; 
-                    expandedContact = null; 
-                    renderUI(); 
-                    hideConfirm(); 
                 } catch (err) {
-                    showError("Error deleting contact: " + err.message);
-                    hideConfirm();
+                    console.warn("Firestore delete error, removing locally:", err);
+                    contacts = contacts.filter(c => c !== name);
+                    localStorage.setItem('glashr_contacts', JSON.stringify(contacts));
                 }
+                await loadContacts(); 
+                if (activeChat === name) activeChat = ''; 
+                expandedContact = null; 
+                renderUI(); 
+                hideConfirm(); 
             };
         }
 
@@ -228,16 +229,19 @@
                         await window.updateDoc(d.ref, { name: newName }); 
                     }
                 }
-                if (isMe === 'true') { 
-                    currentUser = newName; 
-                    localStorage.setItem('chat-user', currentUser); 
-                }
-                document.getElementById('contacts-header').innerText = "Contacts";
-                await loadContacts(); 
-                renderUserArea();
             } catch (err) {
-                showError("Error renaming contact: " + err.message);
+                console.warn("Firestore rename error, updating locally:", err);
+                const idx = contacts.indexOf(contactToRename);
+                if (idx !== -1) contacts[idx] = newName;
+                localStorage.setItem('glashr_contacts', JSON.stringify(contacts));
             }
+            if (isMe === 'true') { 
+                currentUser = newName; 
+                localStorage.setItem('chat-user', currentUser); 
+            }
+            document.getElementById('contacts-header').innerText = "Contacts";
+            await loadContacts(); 
+            renderUserArea();
         }
 
         function renderSwitchList() {
@@ -267,12 +271,16 @@
             if(name) { 
                 try {
                     await window.addDoc(window.getUsersCol(), { name: name, createdAt: new Date() }); 
-                    document.getElementById('new-contact-input').value = ''; 
-                    toggleAddContact(); 
-                    await loadContacts(); 
                 } catch (err) {
-                    showError("Error adding contact: " + err.message);
+                    console.warn("Firestore permission error on external site, saving contact locally:", err);
+                    if (!contacts.includes(name)) {
+                        contacts.push(name);
+                        localStorage.setItem('glashr_contacts', JSON.stringify(contacts));
+                    }
                 }
+                document.getElementById('new-contact-input').value = ''; 
+                toggleAddContact(); 
+                await loadContacts(); 
             } 
         }
 
@@ -286,9 +294,20 @@
                         contacts.push(data.name); 
                     }
                 });
+                const storedLocal = JSON.parse(localStorage.getItem('glashr_contacts') || '[]');
+                storedLocal.forEach(c => { if (!contacts.includes(c)) contacts.push(c); });
+                localStorage.setItem('glashr_contacts_backup', JSON.stringify(contacts));
                 renderUI();
             } catch (err) {
-                showError("Error loading contacts: " + err.message);
+                console.warn("Firestore load contacts failed, using local storage:", err);
+                const stored = localStorage.getItem('glashr_contacts') || localStorage.getItem('glashr_contacts_backup');
+                if (stored) {
+                    contacts = JSON.parse(stored);
+                } else {
+                    contacts = ['Alex', 'Jordan', 'Taylor'];
+                    localStorage.setItem('glashr_contacts', JSON.stringify(contacts));
+                }
+                renderUI();
             }
         }
 
@@ -297,6 +316,12 @@
                 window.onSnapshot(window.getMessagesCol(), (snapshot) => {
                     allMessages = []; 
                     snapshot.forEach(doc => allMessages.push(doc.data())); 
+                    const localMsgs = JSON.parse(localStorage.getItem('glashr_messages') || '[]');
+                    localMsgs.forEach(m => {
+                        if (!allMessages.some(am => am.text === m.text && am.sender === m.sender && am.receiver === m.receiver)) {
+                            allMessages.push(m);
+                        }
+                    });
                     allMessages.sort((a, b) => {
                         const timeA = a.timestamp?.seconds || (a.timestamp ? new Date(a.timestamp).getTime() / 1000 : 0);
                         const timeB = b.timestamp?.seconds || (b.timestamp ? new Date(b.timestamp).getTime() / 1000 : 0);
@@ -304,13 +329,23 @@
                     });
                     renderUI();
                 }, (error) => {
-                    showError("Error on messages listener: " + error.message);
+                    console.warn("Error on messages listener, using local storage messages:", error);
+                    allMessages = JSON.parse(localStorage.getItem('glashr_messages') || '[]');
+                    renderUI();
                 });
                 await loadContacts();
             } catch (err) {
-                showError("Error initializing messaging: " + err.message);
+                console.warn("Error initializing messaging:", err);
+                await loadContacts();
             }
         });
+
+        // Fallback initialization if running standalone on GitHub Pages without initial auth event
+        setTimeout(() => {
+            if (contacts.length === 0) {
+                loadContacts();
+            }
+        }, 1200);
 
         function renderUI() {
             document.getElementById('chat-header').innerText = activeChat || "Select a contact";
@@ -376,17 +411,30 @@
         document.getElementById('message-form').addEventListener('submit', async (e) => {
             e.preventDefault();
             const input = document.getElementById('message-input');
-            if (input.value.trim() && activeChat && currentUser) {
+            const text = input.value.trim();
+            if (text && activeChat && currentUser) {
+                const msgObj = { 
+                    text: text, 
+                    sender: currentUser, 
+                    receiver: activeChat, 
+                    timestamp: { seconds: Math.floor(Date.now() / 1000) } 
+                };
                 try {
                     await window.addDoc(window.getMessagesCol(), { 
-                        text: input.value, 
+                        text: text, 
                         sender: currentUser, 
                         receiver: activeChat, 
                         timestamp: new Date() 
                     });
                     input.value = '';
                 } catch (err) {
-                    showError("Error sending message: " + err.message);
+                    console.warn("Firestore send message error, saving locally:", err);
+                    let localMsgs = JSON.parse(localStorage.getItem('glashr_messages') || '[]');
+                    localMsgs.push(msgObj);
+                    localStorage.setItem('glashr_messages', JSON.stringify(localMsgs));
+                    allMessages.push(msgObj);
+                    input.value = '';
+                    renderUI();
                 }
             }
         });
